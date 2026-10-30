@@ -1,0 +1,5 @@
+.env
+# local database dumps and binaries
+/*.sql
+*.exe
+/tmp/

@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: edirlink-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: edirlink
+      POSTGRES_PASSWORD: edirlink_dev_password
+      POSTGRES_DB: edirlink
+    ports:
+      - "5432:5432"
+    volumes:
+      - edirlink_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  edirlink_postgres_data:
