@@ -1,0 +1,143 @@
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/nati-darse/edirlink-backend/internal/auth"
+	"github.com/nati-darse/edirlink-backend/internal/config"
+	"github.com/nati-darse/edirlink-backend/internal/contribution"
+	"github.com/nati-darse/edirlink-backend/internal/db"
+	"github.com/nati-darse/edirlink-backend/internal/edir"
+	"github.com/nati-darse/edirlink-backend/internal/member"
+	"github.com/nati-darse/edirlink-backend/internal/user"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	database, err := db.Connect(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer database.Close()
+
+	userRepository := user.NewRepository(database)
+	edirRepository := edir.NewRepository(database)
+	memberRepository := member.NewRepository(database)
+	contributionRepository := contribution.NewRepository(database)
+	contributionHandler := contribution.NewHandler(contributionRepository)
+
+	authHandler := auth.NewHandler(
+		userRepository,
+		cfg.JWTSecret,
+	)
+
+	edirHandler := edir.NewHandler(
+		edirRepository,
+	)
+	memberHandler := member.NewHandler(
+		memberRepository,
+		edirRepository,
+	)
+
+	r := chi.NewRouter()
+
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":   "ok",
+			"database": "connected",
+		})
+	})
+
+	r.Route("/api", func(r chi.Router) {
+
+		// Public authentication routes
+		r.Post("/auth/login", authHandler.Login)
+		r.Post("/auth/register", authHandler.Register)
+		r.Post("/auth/member/login", authHandler.MemberLogin)
+
+		// Protected routes
+		r.Group(func(r chi.Router) {
+
+			r.Use(auth.AuthMiddleware(cfg.JWTSecret))
+			r.Put("/auth/change-password", authHandler.ChangePassword)
+			r.Get("/member/edirs", memberHandler.ListMyEdirs)
+			r.Get("/me/contributions", contributionHandler.ListMine)
+			r.Get("/edirs/{edirID}/contributions", contributionHandler.ListByEdir)
+			r.Post("/edirs/{edirID}/contributions/generate", contributionHandler.GenerateByEdir)
+
+			r.Get("/me", func(w http.ResponseWriter, r *http.Request) {
+
+				claims, ok := auth.GetClaims(r.Context())
+
+				if !ok {
+					http.Error(
+						w,
+						"authentication required",
+						http.StatusUnauthorized,
+					)
+					return
+				}
+
+				w.Header().Set(
+					"Content-Type",
+					"application/json",
+				)
+
+				json.NewEncoder(w).Encode(map[string]string{
+					"user_id": claims.UserID,
+					"role":    claims.Role,
+				})
+			})
+
+			// organizer routes
+			r.Post("/edirs", edirHandler.Create)
+			r.Post("/edirs/{edirID}/members", memberHandler.Create)
+			r.Get("/edirs/{edirID}/members", memberHandler.List)
+			r.Post("/edirs/{edirID}/members/existing", memberHandler.AddExisting)
+			r.Get("/edirs/{edirID}/members/{memberID}", memberHandler.GetByID)
+			r.Delete("/edirs/{edirID}/members/{memberID}", memberHandler.Remove)
+
+			// Super Admin routes
+			r.Route("/admin", func(r chi.Router) {
+
+				r.Get(
+					"/edirs/pending",
+					edirHandler.ListPending,
+				)
+
+				r.Put(
+					"/edirs/{id}/approve",
+					edirHandler.Approve,
+				)
+
+				r.Put(
+					"/edirs/{id}/reject",
+					edirHandler.Reject,
+				)
+			})
+		})
+	})
+
+	log.Printf(
+		"EdirLink API running on http://localhost:%s",
+		cfg.Port,
+	)
+
+	if err := http.ListenAndServe(
+		":"+cfg.Port,
+		r,
+	); err != nil {
+		log.Fatal(err)
+	}
+}
